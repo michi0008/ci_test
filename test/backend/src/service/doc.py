@@ -108,3 +108,6 @@ class DocumentClickLogService:
         except Exception as e:
             logger.error(f"エクスポート失敗: {e}")
             raise
+
+if __name__ == "__main__":
+    pass
