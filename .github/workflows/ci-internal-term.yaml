@@ -1,0 +1,107 @@
+name: CI Internal Term
+
+on:
+  pull_request:
+    branches: [ main, develop ]
+    paths:
+      - 'internal-term/**'
+      - 'pocvec/**'
+      - '.github/workflows/ci-internal-term.yaml'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  pull-requests: write
+  actions: read
+
+env:
+  PYTHON_VERSION: '3.12'
+
+jobs:
+  # code-quality:
+  #   name: Code Quality Check
+  #   runs-on: ubuntu-latest
+  #   timeout-minutes: 10
+  #   steps:
+  #     - name: Checkout
+  #       uses: actions/checkout@v4
+
+  #     - name: Set up Python
+  #       uses: actions/setup-python@v4
+  #       with:
+  #         python-version: ${{ env.PYTHON_VERSION }}
+
+  #     - name: Install uv
+  #       uses: astral-sh/setup-uv@v3
+
+  #     - name: Install dependencies
+  #       working-directory: ./internal-term
+  #       run: |
+  #         uv sync --dev
+
+  #     - name: Run linting
+  #       working-directory: ./internal-term
+  #       run: |
+  #         echo "::group::Running ruff check"
+  #         uv run ruff check . --output-format=github
+  #         echo "::endgroup::"
+  #
+  #         echo "::group::Running ruff format check"
+  #         uv run ruff format --check .
+  #         echo "::endgroup::"
+
+  #     - name: Run type checking
+  #       working-directory: ./internal-term
+  #       run: |
+  #         echo "::group::Running mypy"
+  #         uv run mypy . || true  # 型チェックは警告レベル
+  #         echo "::endgroup::"
+
+  docker-build-test:
+    name: Docker Build Test
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v3
+
+      - name: Build Docker image (test)
+        id: docker-build
+        uses: docker/build-push-action@v5
+        with:
+          context: .
+          file: ./internal-term/Dockerfile
+          push: false
+          load: true
+          tags: internal-term:test
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
+
+      - name: Verify Docker image
+        run: |
+          echo "Verifying Docker image was built successfully..."
+          docker images internal-term:test
+          if ! docker images internal-term:test --format "table {{.Repository}}:{{.Tag}}" | grep -q "internal-term:test"; then
+            echo "❌ Docker image build failed"
+            exit 1
+          fi
+          echo "✅ Docker image built successfully"
+
+      - name: Generate build summary
+        if: always()
+        run: |
+          echo "## 🐳 Docker Build Test Results" >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+          echo "### Docker Build" >> $GITHUB_STEP_SUMMARY
+          echo "- **Status**: ${{ steps.docker-build.outcome }}" >> $GITHUB_STEP_SUMMARY
+          echo "- **Image**: internal-term:test" >> $GITHUB_STEP_SUMMARY
+          echo "- **Build Time**: $(date -u)" >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+          if [ "${{ steps.docker-build.outcome }}" == "success" ]; then
+            echo "✅ Docker image built successfully" >> $GITHUB_STEP_SUMMARY
+          else
+            echo "❌ Docker image build failed" >> $GITHUB_STEP_SUMMARY
+          fi

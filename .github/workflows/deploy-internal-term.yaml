@@ -1,0 +1,280 @@
+name: Deploy Internal Term Workflow
+
+on:
+  workflow_dispatch:
+    inputs:
+      environment:
+        description: 'デプロイ対象環境'
+        type: environment
+        required: true
+
+permissions:
+  id-token: write
+  contents: read
+  actions: read
+  security-events: write
+
+
+jobs:
+  validate-inputs:
+    name: Validate Inputs
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    outputs:
+      environment: ${{ steps.validate.outputs.environment }}
+    steps:
+      - name: Validate and Set Environment Variables
+        id: validate
+        run: |
+          # 入力値の検証
+          if [[ -z "${{ github.event.inputs.environment }}" ]]; then
+            echo "::error::Environment is required"
+            exit 1
+          fi
+          
+          # 有効な環境名の検証
+          valid_envs=("stg" "prod")
+          if [[ ! " ${valid_envs[@]} " =~ " ${{ github.event.inputs.environment }} " ]]; then
+            echo "::error::Invalid environment. Must be one of: ${valid_envs[*]}"
+            exit 1
+          fi
+          
+          # 出力設定
+          echo "environment=${{ github.event.inputs.environment }}" >> $GITHUB_OUTPUT
+          # デバッグ情報
+          echo "::notice::Deploying to environment: ${{ github.event.inputs.environment }}"
+
+  build-and-push:
+    name: Build and Push Docker Image
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    environment: ${{ needs.validate-inputs.outputs.environment }}
+    needs: validate-inputs
+    outputs:
+      image_tag: ${{ steps.build.outputs.image_tag }}
+      image_digest: ${{ steps.build.outputs.image_digest }}
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Configure AWS credentials
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          role-to-assume: ${{ vars.AWS_ROLE_ARN }}
+          aws-region: ap-northeast-1
+          role-session-name: GitHubActions-BuildPush-${{ github.run_id }}
+
+      - name: Login to Amazon ECR
+        id: login-ecr
+        uses: aws-actions/amazon-ecr-login@v2
+        with:
+          mask-password: 'true'
+
+      - name: Build and Push Docker Image
+        id: build
+        uses: ./.github/actions/build_and_push_internal_term
+        with:
+          ECR_REPOSITORY_INTERNAL_TERM: ${{ vars.ECR_REPOSITORY_INTERNAL_TERM }}
+          AWS_ROLE_ARN: ${{ vars.AWS_ROLE_ARN }}
+          IMAGE_TAG: ${{ github.sha }}
+          ENVIRONMENT: ${{ needs.validate-inputs.outputs.environment }}
+        env:
+          AWS_REGION: ap-northeast-1
+
+      - name: Generate build summary
+        run: |
+          echo "## Build Summary" >> $GITHUB_STEP_SUMMARY
+          echo "- **Environment**: ${{ needs.validate-inputs.outputs.environment }}" >> $GITHUB_STEP_SUMMARY
+          echo "- **Image Tag**: ${{ steps.build.outputs.image_tag }}" >> $GITHUB_STEP_SUMMARY
+          echo "- **Image Digest**: ${{ steps.build.outputs.image_digest }}" >> $GITHUB_STEP_SUMMARY
+          echo "- **Build Time**: $(date -u)" >> $GITHUB_STEP_SUMMARY
+
+  deploy:
+    name: Deploy to ECS
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    environment:
+      name: ${{ needs.validate-inputs.outputs.environment }}
+      url: ${{ steps.deploy.outputs.service_url }}
+    needs:
+      - validate-inputs
+      - build-and-push
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Configure AWS credentials
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          role-to-assume: ${{ vars.AWS_ROLE_ARN }}
+          aws-region: ap-northeast-1
+          role-session-name: GitHubActions-Deploy-${{ github.run_id }}
+
+      - name: Pre-deployment health check
+        run: |
+          echo "::group::Pre-deployment validation"
+          
+          # デバッグ情報の表示
+          echo "::notice::AWS Region: ap-northeast-1"
+          echo "::notice::ECS Cluster: ${{ vars.ECS_CLUSTER_INTERNAL_TERM }}"
+          echo "::notice::ECR Repository: ${{ vars.ECR_REPOSITORY_INTERNAL_TERM }}"
+          
+          # AWS認証情報の確認
+          echo "::notice::Verifying AWS credentials..."
+          aws sts get-caller-identity
+          
+          # ECSクラスターの存在確認
+          echo "::notice::Checking ECS cluster status..."
+          cluster_status=$(aws ecs describe-clusters --clusters ${{ vars.ECS_CLUSTER_INTERNAL_TERM }} --query 'clusters[0].status' --output text 2>&1)
+          echo "::notice::Cluster status response: $cluster_status"
+          
+          if [[ "$cluster_status" != "ACTIVE" ]]; then
+            echo "::error::ECS cluster ${{ vars.ECS_CLUSTER_INTERNAL_TERM }} is not active (status: $cluster_status)"
+            exit 1
+          fi
+          
+          # ECRリポジトリの存在確認
+          echo "::notice::Checking ECR repository..."
+          if ! aws ecr describe-repositories --repository-names ${{ vars.ECR_REPOSITORY_INTERNAL_TERM }} --region ap-northeast-1 2>&1; then
+            echo "::error::ECR repository ${{ vars.ECR_REPOSITORY_INTERNAL_TERM }} does not exist in region ap-northeast-1"
+            
+            # 利用可能なECRリポジトリを一覧表示（デバッグ用）
+            echo "::notice::Available ECR repositories:"
+            aws ecr describe-repositories --region ap-northeast-1 --query 'repositories[].repositoryName' --output table || true
+            exit 1
+          fi
+          
+          echo "::notice::Pre-deployment validation passed"
+          echo "::endgroup::"
+
+      - name: Deploy to ECS
+        id: deploy
+        uses: ./.github/actions/deploy_to_ecs_internal_term
+        with:
+          STATE_FILE_BUCKET: ${{ vars.STATE_FILE_BUCKET }}
+          ECS_CLUSTER: ${{ vars.ECS_CLUSTER_INTERNAL_TERM }}
+          ECS_SERVICE: ${{ vars.ECS_SERVICE_INTERNAL_TERM }}
+          WORKING_DIR: ./ecspresso/internal-term
+          TARGET_GROUP_ARN_INTERNAL_TERM: ${{ vars.TARGET_GROUP_ARN_INTERNAL_TERM }}
+
+      - name: Post-deployment health check
+        run: |
+          echo "::group::Post-deployment health check"
+          
+          # サービスの安定性確認
+          max_attempts=30
+          attempt=1
+          
+          echo "::notice::Starting health check for ECS service..."
+          echo "::notice::Cluster: ${{ vars.ECS_CLUSTER_INTERNAL_TERM }}"
+          echo "::notice::Service: ${{ vars.ECS_SERVICE_INTERNAL_TERM }}"
+          
+          while [ $attempt -le $max_attempts ]; do
+            echo "Health check attempt $attempt/$max_attempts"
+            
+            # ECSサービスのステータス確認
+            service_status=$(aws ecs describe-services \
+              --cluster ${{ vars.ECS_CLUSTER_INTERNAL_TERM }} \
+              --services ${{ vars.ECS_SERVICE_INTERNAL_TERM }} \
+              --region ap-northeast-1 \
+              --query 'services[0].deployments[?status==`PRIMARY`].runningCount' \
+              --output text 2>&1)
+            
+            desired_count=$(aws ecs describe-services \
+              --cluster ${{ vars.ECS_CLUSTER_INTERNAL_TERM }} \
+              --services ${{ vars.ECS_SERVICE_INTERNAL_TERM }} \
+              --region ap-northeast-1 \
+              --query 'services[0].desiredCount' \
+              --output text 2>&1)
+            
+            echo "::notice::Service status: $service_status, Desired count: $desired_count"
+            
+            # エラーチェック
+            if [[ "$service_status" == *"error"* ]] || [[ "$desired_count" == *"error"* ]]; then
+              echo "::error::Error retrieving service information"
+              echo "::error::Service status response: $service_status"
+              echo "::error::Desired count response: $desired_count"
+              exit 1
+            fi
+            
+            if [ "$service_status" = "$desired_count" ] && [ "$desired_count" -gt 0 ]; then
+              echo "::notice::Service is healthy (Running: $service_status, Desired: $desired_count)"
+              break
+            fi
+            
+            if [ $attempt -eq $max_attempts ]; then
+              echo "::error::Health check failed after $max_attempts attempts"
+              echo "::error::Final status - Running: $service_status, Desired: $desired_count"
+              
+              # デバッグ情報の追加
+              echo "::notice::Service details for debugging:"
+              aws ecs describe-services \
+                --cluster ${{ vars.ECS_CLUSTER_INTERNAL_TERM }} \
+                --services ${{ vars.ECS_SERVICE_INTERNAL_TERM }} \
+                --region ap-northeast-1 || true
+              exit 1
+            fi
+            
+            echo "Service not ready yet (Running: $service_status, Desired: $desired_count). Waiting..."
+            sleep 30
+            attempt=$((attempt + 1))
+          done
+          
+          echo "::endgroup::"
+
+      - name: Generate deployment summary
+        if: always()
+        run: |
+          echo "## Deployment Summary" >> $GITHUB_STEP_SUMMARY
+          echo "- **Environment**: ${{ needs.validate-inputs.outputs.environment }}" >> $GITHUB_STEP_SUMMARY
+          echo "- **ECS Cluster**: ${{ vars.ECS_CLUSTER_INTERNAL_TERM }}" >> $GITHUB_STEP_SUMMARY
+          echo "- **ECS Service**: ${{ vars.ECS_SERVICE_INTERNAL_TERM }}" >> $GITHUB_STEP_SUMMARY
+          echo "- **Image Tag**: ${{ needs.build-and-push.outputs.image_tag }}" >> $GITHUB_STEP_SUMMARY
+          echo "- **Deployment Time**: $(date -u)" >> $GITHUB_STEP_SUMMARY
+          echo "- **Deployment Status**: ${{ job.status }}" >> $GITHUB_STEP_SUMMARY
+
+  notify:
+    name: Notify Deployment Result
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    needs:
+      - validate-inputs
+      - build-and-push
+      - deploy
+    if: always()
+    steps:
+      - name: Determine overall status
+        id: status
+        run: |
+          if [[ "${{ needs.deploy.result }}" == "success" ]]; then
+            echo "status=success" >> $GITHUB_OUTPUT
+            echo "message=✅ Deployment to ${{ needs.validate-inputs.outputs.environment }} completed successfully" >> $GITHUB_OUTPUT
+          elif [[ "${{ needs.deploy.result }}" == "failure" ]]; then
+            echo "status=failure" >> $GITHUB_OUTPUT
+            echo "message=❌ Deployment to ${{ needs.validate-inputs.outputs.environment }} failed" >> $GITHUB_OUTPUT
+          elif [[ "${{ needs.deploy.result }}" == "cancelled" ]]; then
+            echo "status=cancelled" >> $GITHUB_OUTPUT
+            echo "message=⚠️ Deployment to ${{ needs.validate-inputs.outputs.environment }} was cancelled" >> $GITHUB_OUTPUT
+          else
+            echo "status=unknown" >> $GITHUB_OUTPUT
+            echo "message=❓ Deployment to ${{ needs.validate-inputs.outputs.environment }} status unknown" >> $GITHUB_OUTPUT
+          fi
+
+      - name: Create deployment summary
+        run: |
+          echo "## 🚀 Internal Term Deployment Report" >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+          echo "${{ steps.status.outputs.message }}" >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+          echo "### Deployment Details" >> $GITHUB_STEP_SUMMARY
+          echo "- **Workflow**: ${{ github.workflow }}" >> $GITHUB_STEP_SUMMARY
+          echo "- **Run ID**: ${{ github.run_id }}" >> $GITHUB_STEP_SUMMARY
+          echo "- **Triggered by**: ${{ github.actor }}" >> $GITHUB_STEP_SUMMARY
+          echo "- **Environment**: ${{ needs.validate-inputs.outputs.environment }}" >> $GITHUB_STEP_SUMMARY
+          echo "- **Commit**: ${{ github.sha }}" >> $GITHUB_STEP_SUMMARY
+          echo "- **Branch**: ${{ github.ref_name }}" >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+          echo "### Job Results" >> $GITHUB_STEP_SUMMARY
+          echo "- **Validation**: ${{ needs.validate-inputs.result }}" >> $GITHUB_STEP_SUMMARY
+          echo "- **Build & Push**: ${{ needs.build-and-push.result }}" >> $GITHUB_STEP_SUMMARY
+          echo "- **Deploy**: ${{ needs.deploy.result }}" >> $GITHUB_STEP_SUMMARY

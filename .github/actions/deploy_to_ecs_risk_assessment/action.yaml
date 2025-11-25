@@ -1,0 +1,47 @@
+name: Deploy Risk Assessment to Amazon ECS
+description: Deploy Risk Assessment Docker container to Amazon ECS
+inputs:
+  STATE_FILE_BUCKET:
+    description: S3 bucket name for Terraform state file
+    required: true
+  ECS_CLUSTER:
+    description: ECS cluster name
+    required: true
+  ECS_SERVICE:
+    description: ECS service name
+    required: true
+  WORKING_DIR:
+    description: Working directory for ecspresso
+    required: true
+  TARGET_GROUP_ARN_RISK_ASSESSMENT:
+    description: Target Group ARN for Risk Assessment
+    required: true
+
+runs:
+  using: 'composite'
+  steps:
+    - uses: kayac/ecspresso@v2
+      with:
+        version: latest
+
+    - name: Show ecspresso Deployment Diff
+      shell: bash
+      run: ecspresso diff
+      working-directory: ${{ inputs.WORKING_DIR }}
+      env:
+          STATE_FILE_BUCKET: ${{ inputs.STATE_FILE_BUCKET }}
+          RISK_ASSESSMENT_IMAGE_TAG: ${{ github.sha }}
+          ECS_CLUSTER_RISK_ASSESSMENT: ${{ inputs.ECS_CLUSTER }}
+          ECS_SERVICE_RISK_ASSESSMENT: ${{ inputs.ECS_SERVICE }}
+          TARGET_GROUP_ARN_RISK_ASSESSMENT: ${{ inputs.TARGET_GROUP_ARN_RISK_ASSESSMENT }}
+
+    - name: Deploy to ECS
+      shell: bash
+      run: ecspresso deploy --tasks=-1
+      working-directory: ${{ inputs.WORKING_DIR }}
+      env:
+          STATE_FILE_BUCKET: ${{ inputs.STATE_FILE_BUCKET }}
+          RISK_ASSESSMENT_IMAGE_TAG: ${{ github.sha }}
+          ECS_CLUSTER_RISK_ASSESSMENT: ${{ inputs.ECS_CLUSTER }}
+          ECS_SERVICE_RISK_ASSESSMENT: ${{ inputs.ECS_SERVICE }}
+          TARGET_GROUP_ARN_RISK_ASSESSMENT: ${{ inputs.TARGET_GROUP_ARN_RISK_ASSESSMENT }}

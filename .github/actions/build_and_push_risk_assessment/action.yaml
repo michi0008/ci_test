@@ -1,0 +1,90 @@
+name: Build and Push Risk Assessment to Amazon ECR
+description: Build & Push Risk Assessment Docker container to Amazon ECR
+inputs:
+  ECR_REPOSITORY_RISK_ASSESSMENT:
+    description: ECR Repository Name for Risk Assessment
+    required: true
+  AWS_ROLE_ARN:
+    description: IAM Role ARN For GitHub Actions
+    required: true
+  IMAGE_TAG:
+    description: Docker image tag
+    required: false
+    default: ${{ github.sha }}
+  ENVIRONMENT:
+    description: Deployment environment
+    required: false
+    default: prod
+
+outputs:
+  image_tag:
+    description: The tag of the built image
+    value: ${{ steps.build.outputs.image_tag }}
+  image_digest:
+    description: The digest of the pushed image
+    value: ${{ steps.build.outputs.image_digest }}
+
+runs:
+  using: 'composite'
+
+  steps:
+    - name: Configure AWS credentials
+      uses: aws-actions/configure-aws-credentials@v4
+      with:
+        role-to-assume: ${{ inputs.AWS_ROLE_ARN }}
+        aws-region: ap-northeast-1
+
+    - name: Login to Amazon ECR
+      id: login-ecr
+      uses: aws-actions/amazon-ecr-login@v2
+
+    - name: Verify ECR Repository
+      shell: bash
+      env:
+        ECR_REPOSITORY: ${{ inputs.ECR_REPOSITORY_RISK_ASSESSMENT }}
+      run: |
+        echo "::notice::Verifying ECR repository: $ECR_REPOSITORY"
+        echo "::notice::AWS Region: ap-northeast-1"
+        
+        # ECRリポジトリの存在確認
+        if aws ecr describe-repositories --repository-names $ECR_REPOSITORY --region ap-northeast-1; then
+          echo "::notice::ECR repository $ECR_REPOSITORY exists and is accessible"
+        else
+          echo "::error::ECR repository $ECR_REPOSITORY does not exist or is not accessible"
+          echo "::notice::Available ECR repositories:"
+          aws ecr describe-repositories --region ap-northeast-1 --query 'repositories[].repositoryName' --output table || true
+          exit 1
+        fi
+
+    - name: Build, tag, and push image to Amazon ECR
+      id: build
+      shell: bash
+      env:
+        ECR_REGISTRY: ${{ steps.login-ecr.outputs.registry }}
+        ECR_REPOSITORY: ${{ inputs.ECR_REPOSITORY_RISK_ASSESSMENT }}
+        IMAGE_TAG: ${{ inputs.IMAGE_TAG }}
+      run: |
+        echo "::notice::Building and pushing Docker image"
+        echo "::notice::ECR Registry: $ECR_REGISTRY"
+        echo "::notice::ECR Repository: $ECR_REPOSITORY"
+        echo "::notice::Image Tag: $IMAGE_TAG"
+        echo "::notice::Full Image URI: $ECR_REGISTRY/$ECR_REPOSITORY:$IMAGE_TAG"
+        
+        # risk-assessmentのDockerfileはルートディレクトリでビルドし、
+        # pocvecとrisk-assessmentの両方をコンテキストに含める必要がある
+        echo "::notice::Building Docker image..."
+        docker build -f risk-assessment/Dockerfile -t $ECR_REGISTRY/$ECR_REPOSITORY:$IMAGE_TAG .
+        
+        echo "::notice::Pushing Docker image to ECR..."
+        docker push $ECR_REGISTRY/$ECR_REPOSITORY:$IMAGE_TAG
+        
+        # Get image digest
+        IMAGE_DIGEST=$(docker inspect --format='{{index .RepoDigests 0}}' $ECR_REGISTRY/$ECR_REPOSITORY:$IMAGE_TAG | cut -d'@' -f2)
+        
+        # Set outputs
+        echo "image_tag=$IMAGE_TAG" >> $GITHUB_OUTPUT
+        echo "image_digest=$IMAGE_DIGEST" >> $GITHUB_OUTPUT
+        
+        echo "::notice::Docker image successfully pushed"
+        echo "::notice::Image tag: $IMAGE_TAG"
+        echo "::notice::Image digest: $IMAGE_DIGEST"

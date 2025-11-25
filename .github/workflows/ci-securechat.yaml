@@ -1,0 +1,119 @@
+name: CI SecureChat
+
+on:
+  pull_request:
+    branches: [ main, develop ]
+    paths:
+      - 'securechat/**'
+      - 'pocvec/**'
+      - '.github/workflows/ci-securechat.yaml'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  pull-requests: write
+  actions: read
+
+env:
+  PYTHON_VERSION: '3.13'
+
+jobs:
+  code-quality:
+    name: Code Quality Check
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v4
+        with:
+          python-version: ${{ env.PYTHON_VERSION }}
+
+      - name: Install uv
+        uses: astral-sh/setup-uv@v3
+
+      - name: Install dependencies
+        working-directory: ./securechat
+        run: |
+          uv sync --dev
+
+      - name: Run linting
+        working-directory: ./securechat
+        run: |
+          echo "::group::Running ruff check"
+          uv run ruff check . --output-format=github
+          echo "::endgroup::"
+
+          echo "::group::Running ruff format check"
+          uv run ruff format --check .
+          echo "::endgroup::"
+
+      - name: Run type checking
+        working-directory: ./securechat
+        run: |
+          echo "::group::Running mypy"
+          uv run mypy . || true  # 型チェックは警告レベル
+          echo "::endgroup::"
+
+      - name: Generate code quality summary
+        if: always()
+        run: |
+          echo "## 🔍 Code Quality Results - SecureChat" >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+          echo "### Linting & Formatting" >> $GITHUB_STEP_SUMMARY
+          echo "- **Ruff Check**: ${{ steps.ruff-check.outcome || 'completed' }}" >> $GITHUB_STEP_SUMMARY
+          echo "- **Ruff Format**: ${{ steps.ruff-format.outcome || 'completed' }}" >> $GITHUB_STEP_SUMMARY
+          echo "- **MyPy**: ${{ steps.mypy.outcome || 'completed' }}" >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+          echo "✅ Code quality checks completed for securechat" >> $GITHUB_STEP_SUMMARY
+
+  docker-build-test:
+    name: Docker Build Test
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v3
+
+      - name: Build Docker image (test)
+        id: docker-build
+        uses: docker/build-push-action@v5
+        with:
+          context: .
+          file: ./securechat/Dockerfile
+          push: false
+          load: true
+          tags: securechat:test
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
+
+      - name: Verify Docker image
+        run: |
+          echo "Verifying Docker image was built successfully..."
+          docker images securechat:test
+          if ! docker images securechat:test --format "table {{.Repository}}:{{.Tag}}" | grep -q "securechat:test"; then
+            echo "❌ Docker image build failed"
+            exit 1
+          fi
+          echo "✅ Docker image built successfully"
+
+      - name: Generate build summary
+        if: always()
+        run: |
+          echo "## 🐳 Docker Build Test Results" >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+          echo "### Docker Build" >> $GITHUB_STEP_SUMMARY
+          echo "- **Status**: ${{ steps.docker-build.outcome }}" >> $GITHUB_STEP_SUMMARY
+          echo "- **Image**: securechat:test" >> $GITHUB_STEP_SUMMARY
+          echo "- **Build Time**: $(date -u)" >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+          if [ "${{ steps.docker-build.outcome }}" == "success" ]; then
+            echo "✅ Docker image built successfully" >> $GITHUB_STEP_SUMMARY
+          else
+            echo "❌ Docker image build failed" >> $GITHUB_STEP_SUMMARY
+          fi

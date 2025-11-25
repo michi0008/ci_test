@@ -1,0 +1,42 @@
+name: CI MitsuAI Backend
+
+on:
+  pull_request:
+    paths:
+      - 'mitsuai/backend/src/**'
+
+jobs:
+  lintercheck-backend:
+    name: Linter Check Backend
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: mitsuai/backend
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Python
+        uses: actions/setup-python@v4
+        with:
+          python-version: '3.13'
+
+      - name: Install uv
+        run: pip install uv
+        shell: bash
+
+      - name: Install dependencies (with dev extras)
+        run: uv sync --locked
+        shell: bash
+
+      - name: Install pyright
+        run: uv add --dev pyright 
+        shell: bash
+
+      - name: Run ruff
+        run: uv run --with ruff -- ruff check ./src
+        shell: bash
+    
+      - name: Run pyright
+        run: uv run -- pyright ./src
+        shell: bash

@@ -1,0 +1,32 @@
+name: Add Issue to mh-chatbot Project
+
+# 重要: このワークフローは高田（kumanowa）のPATを使用しているため、
+# 退社後に動作しなくなる可能性があります。
+# その際は新しいPATを作成し、シークレットを更新する必要があります。
+#
+# このワークフローを使用するには、以下の設定が必要です：
+# 1. Personal Access Token (PAT) の作成
+#    - https://github.com/settings/tokens で "Generate new token (classic)" をクリック
+#    - 必要な権限:
+#      * repo (リポジトリへのフルアクセス)
+#      * project (read:project と write:project)
+#      * read:org (admin:orgセクション内にある組織読み取り権限)
+# 2. リポジトリのSettings > Secrets and variables > Actions で
+#    "ADD_TO_PROJECT_PAT" という名前でトークンを登録
+
+on:
+  issues:
+    types: [opened]
+
+jobs:
+  add-to-project:
+    name: Add issue to mh-chatbot project
+    runs-on: ubuntu-latest
+    steps:
+      - name: Add Issue to Project
+        uses: actions/add-to-project@v1.0.2
+        with:
+          # mh-chatbotプロジェクトのURL
+          project-url: https://github.com/orgs/emuni-kyoto/projects/10
+          # GitHub tokenは組織のプロジェクトにアクセスするために必要
+          github-token: ${{ secrets.ADD_TO_PROJECT_PAT }}

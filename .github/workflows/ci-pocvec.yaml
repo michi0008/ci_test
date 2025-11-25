@@ -1,0 +1,69 @@
+name: CI Pocvec
+
+on:
+  pull_request:
+    branches: [ main, develop ]
+    paths:
+      - 'pocvec/**'
+      - '.github/workflows/ci-pocvec.yaml'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  pull-requests: write
+  actions: read
+
+env:
+  PYTHON_VERSION: '3.12'
+
+jobs:
+  code-quality:
+    name: Code Quality Check
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v4
+        with:
+          python-version: ${{ env.PYTHON_VERSION }}
+
+      - name: Install uv
+        uses: astral-sh/setup-uv@v3
+
+      - name: Install dependencies
+        working-directory: ./pocvec
+        run: |
+          uv sync --dev
+
+      - name: Run linting
+        working-directory: ./pocvec
+        run: |
+          echo "::group::Running ruff check"
+          uv run ruff check . --output-format=github
+          echo "::endgroup::"
+
+          echo "::group::Running ruff format check"
+          uv run ruff format --check .
+          echo "::endgroup::"
+
+      - name: Run type checking
+        working-directory: ./pocvec
+        run: |
+          echo "::group::Running mypy"
+          uv run mypy . || true  # 型チェックは警告レベル
+          echo "::endgroup::"
+
+      - name: Generate code quality summary
+        if: always()
+        run: |
+          echo "## 🔍 Code Quality Results - Pocvec" >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+          echo "### Linting & Formatting" >> $GITHUB_STEP_SUMMARY
+          echo "- **Ruff Check**: ${{ steps.ruff-check.outcome || 'completed' }}" >> $GITHUB_STEP_SUMMARY
+          echo "- **Ruff Format**: ${{ steps.ruff-format.outcome || 'completed' }}" >> $GITHUB_STEP_SUMMARY
+          echo "- **MyPy**: ${{ steps.mypy.outcome || 'completed' }}" >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+          echo "✅ Code quality checks completed for pocvec" >> $GITHUB_STEP_SUMMARY

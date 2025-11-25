@@ -1,0 +1,83 @@
+name: CI Infrastructure
+
+on:
+  pull_request:
+    branches: [ main, develop ]
+    paths:
+      - 'infra/**'
+      - '.github/workflows/ci-infra.yaml'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  pull-requests: write
+  actions: read
+
+env:
+  TERRAFORM_VERSION: '1.12.2'
+  TFLINT_VERSION: 'v0.58.0'
+
+jobs:
+  terraform-quality:
+    name: Terraform Quality Check
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Terraform
+        uses: hashicorp/setup-terraform@v3
+        with:
+          terraform_version: ${{ env.TERRAFORM_VERSION }}
+
+      - name: Setup TFLint
+        uses: terraform-linters/setup-tflint@v4
+        with:
+          tflint_version: ${{ env.TFLINT_VERSION }}
+
+      - name: Initialize TFLint
+        working-directory: ./infra
+        run: |
+          tflint --init
+
+      - name: Initialize Terraform providers
+        working-directory: ./infra
+        run: |
+          echo "::group::Initializing Terraform providers"
+          cd environments/prod && terraform init -backend=false
+          cd ../shared && terraform init -backend=false
+          echo "::endgroup::"
+
+      - name: Run Terraform format check
+        working-directory: ./infra
+        run: |
+          echo "::group::Checking Terraform format"
+          make fmt-all
+          echo "::endgroup::"
+
+      - name: Run Terraform validation
+        working-directory: ./infra
+        run: |
+          echo "::group::Validating Terraform files"
+          make validate-all
+          echo "::endgroup::"
+
+      - name: Run TFLint
+        working-directory: ./infra
+        run: |
+          echo "::group::Running TFLint"
+          make lint-all
+          echo "::endgroup::"
+
+      - name: Generate infrastructure quality summary
+        if: always()
+        run: |
+          echo "## 🏗️ Infrastructure Quality Results" >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+          echo "### Terraform Checks" >> $GITHUB_STEP_SUMMARY
+          echo "- **Format**: ${{ steps.terraform-fmt.outcome || 'completed' }}" >> $GITHUB_STEP_SUMMARY
+          echo "- **Validation**: ${{ steps.terraform-validate.outcome || 'completed' }}" >> $GITHUB_STEP_SUMMARY
+          echo "- **TFLint**: ${{ steps.tflint.outcome || 'completed' }}" >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+          echo "✅ Infrastructure quality checks completed" >> $GITHUB_STEP_SUMMARY

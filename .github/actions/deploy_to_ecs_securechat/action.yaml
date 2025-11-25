@@ -1,0 +1,62 @@
+name: Deploy Securechat to Amazon ECS
+description: Deploy Securechat Docker container to Amazon ECS
+inputs:
+  STATE_FILE_BUCKET:
+    description: S3 bucket name for Terraform state file
+    required: true
+  ECS_CLUSTER:
+    description: ECS cluster name
+    required: true
+  ECS_SERVICE:
+    description: ECS service name
+    required: true
+  WORKING_DIR:
+    description: Working directory for ecspresso
+    required: true
+  DYNAMODB_TABLE_NAME_SECURECHAT:
+    description: DynamoDB table name for Securechat
+    required: true
+  S3_BUCKET_NAME_INTERNAL_TERM:
+    description: S3 bucket name for internal term
+    required: true
+  SSM_PARAMETER_PREFIX_SECURECHAT:
+    description: SSM parameter prefix for Securechat
+    required: true
+  TARGET_GROUP_ARN_SECURECHAT:
+    description: Target Group ARN for Securechat
+    required: true
+
+runs:
+  using: 'composite'
+  steps:
+    - uses: kayac/ecspresso@v2
+      with:
+        version: latest
+
+    - name: Show ecspresso Deployment Diff
+      shell: bash
+      run: ecspresso diff
+      working-directory: ${{ inputs.WORKING_DIR }}
+      env:
+          STATE_FILE_BUCKET: ${{ inputs.STATE_FILE_BUCKET }}
+          SECURECHAT_IMAGE_TAG: ${{ github.sha }}
+          ECS_CLUSTER_SECURECHAT: ${{ inputs.ECS_CLUSTER }}
+          ECS_SERVICE_SECURECHAT: ${{ inputs.ECS_SERVICE }}
+          DYNAMODB_TABLE_NAME_SECURECHAT: ${{ inputs.DYNAMODB_TABLE_NAME_SECURECHAT }}
+          S3_BUCKET_NAME_INTERNAL_TERM: ${{ inputs.S3_BUCKET_NAME_INTERNAL_TERM }}
+          SSM_PARAMETER_PREFIX_SECURECHAT: ${{ inputs.SSM_PARAMETER_PREFIX_SECURECHAT }}
+          TARGET_GROUP_ARN_SECURECHAT: ${{ inputs.TARGET_GROUP_ARN_SECURECHAT }}
+
+    - name: Deploy to ECS
+      shell: bash
+      run: ecspresso deploy --tasks=-1
+      working-directory: ${{ inputs.WORKING_DIR }}
+      env:
+          STATE_FILE_BUCKET: ${{ inputs.STATE_FILE_BUCKET }}
+          SECURECHAT_IMAGE_TAG: ${{ github.sha }}
+          ECS_CLUSTER_SECURECHAT: ${{ inputs.ECS_CLUSTER }}
+          ECS_SERVICE_SECURECHAT: ${{ inputs.ECS_SERVICE }}
+          DYNAMODB_TABLE_NAME_SECURECHAT: ${{ inputs.DYNAMODB_TABLE_NAME_SECURECHAT }}
+          S3_BUCKET_NAME_INTERNAL_TERM: ${{ inputs.S3_BUCKET_NAME_INTERNAL_TERM }}
+          SSM_PARAMETER_PREFIX_SECURECHAT: ${{ inputs.SSM_PARAMETER_PREFIX_SECURECHAT }}
+          TARGET_GROUP_ARN_SECURECHAT: ${{ inputs.TARGET_GROUP_ARN_SECURECHAT }}
